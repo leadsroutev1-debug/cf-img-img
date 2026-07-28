@@ -5,61 +5,46 @@ export default {
     }
 
     try {
-      const contentType = request.headers.get("content-type") || "";
+      const body = await request.json();
 
-      let prompt;
-      let image_b64;
+      let prompt = body.prompt;
+      let image_b64 = body.image;
 
-      // ✅ Case 1: JSON input
-      if (contentType.includes("application/json")) {
-        const body = await request.json();
-
-        prompt = body.prompt;
-        image_b64 = body.image; // already base64
-      }
-
-      // ✅ Case 2: FormData (file upload)
-      else if (contentType.includes("multipart/form-data")) {
-        const form = await request.formData();
-
-        prompt = form.get("prompt");
-
-        const file = form.get("image");
-        const arrayBuffer = await file.arrayBuffer();
-
-        image_b64 = btoa(
-          String.fromCharCode(...new Uint8Array(arrayBuffer))
+      if (!prompt || !image_b64) {
+        return new Response(
+          JSON.stringify({ error: "Missing prompt or image" }),
+          { status: 400 }
         );
       }
 
-      // ❌ Invalid
-      else {
-        return new Response("Unsupported content type", { status: 400 });
+      // 🔥 STRIP base64 prefix if present (VERY IMPORTANT)
+      if (image_b64.startsWith("data:image")) {
+        image_b64 = image_b64.split(",")[1];
       }
 
-      if (!prompt || !image_b64) {
-        return new Response("Missing prompt or image", { status: 400 });
-      }
+      console.log("Prompt:", prompt);
+      console.log("Image size:", image_b64.length);
 
-      // ✅ Call Cloudflare Img2Img model
       const result = await env.AI.run(
         "@cf/runwayml/stable-diffusion-v1-5-img2img",
         {
           prompt: prompt,
-          image_b64: image_b64, // ✅ IMPORTANT: correct field name
+          image_b64: image_b64,
+
+          // 🔥 CRITICAL SETTINGS
+          strength: 0.75,
           num_steps: 20,
-          strength: 0.6
+          guidance: 7.5
         }
       );
 
-      // ✅ Return image
       return new Response(result, {
-        headers: {
-          "Content-Type": "image/png"
-        }
+        headers: { "Content-Type": "image/png" }
       });
 
     } catch (err) {
+      console.error("ERROR:", err);
+
       return new Response(
         JSON.stringify({ error: err.message }),
         { status: 500 }
