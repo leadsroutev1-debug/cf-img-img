@@ -1,5 +1,12 @@
 {
   "name": "cf-img2img-worker",
-  "version": "1.0.0",
-  "private": true
+  "main": "src/worker.js",
+  "compatibility_date": "2026-07-29",
+  "ai": {
+    "binding": "AI"
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
 }
