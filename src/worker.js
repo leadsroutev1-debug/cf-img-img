@@ -5,82 +5,85 @@ export default {
     }
 
     try {
-      // Parse incoming form data
+      // ✅ Parse incoming form
       const incomingForm = await request.formData();
 
       const rawPrompt = incomingForm.get("prompt");
       if (!rawPrompt) {
         return new Response(
-          JSON.stringify({ error: "Missing directorial prompt" }),
+          JSON.stringify({ error: "Missing prompt" }),
           { status: 400 }
         );
       }
 
-      // ✅ Enhance your prompt (your original logic preserved)
+      // ✅ Enhance prompt
       const enhancedPrompt = `${rawPrompt}, cinematic lighting, consistent character design, same face, same outfit, high detail, 4k`;
 
-      // ✅ Build a NEW clean FormData payload (important)
+      // ✅ Build multipart form (REQUIRED by CF)
       const form = new FormData();
       form.append("prompt", enhancedPrompt);
-
-      // Optional but recommended controls
       form.append("width", "1024");
       form.append("height", "1024");
 
       let imageCount = 0;
 
-      // ✅ Attach up to 4 images EXACTLY as required
+      // ✅ Attach images (binary, no conversion)
       for (let i = 0; i < 4; i++) {
         const file = incomingForm.get(`input_image_${i}`);
 
         if (file && typeof file.arrayBuffer === "function") {
-          // Directly append the file (no conversion!)
           form.append(`input_image_${i}`, file);
           imageCount++;
         }
       }
 
-      console.log(`Prompt: ${enhancedPrompt.slice(0, 100)}...`);
-      console.log(`Attached ${imageCount} input images`);
+      console.log("Prompt:", enhancedPrompt.slice(0, 80));
+      console.log("Images:", imageCount);
 
-      // ✅ Serialize FormData into a proper multipart stream
+      // ✅ Serialize FormData (REQUIRED trick)
       const formResponse = new Response(form);
       const formStream = formResponse.body;
       const contentType = formResponse.headers.get("content-type");
 
       if (!formStream || !contentType) {
-        throw new Error("Failed to serialize multipart form data");
+        throw new Error("Multipart serialization failed");
       }
 
-      // ✅ Timeout protection (your original idea preserved)
-      const timeout = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Cloudflare AI timeout")), 15000)
-      );
-
-      // ✅ Correct invocation format (CRITICAL FIX)
-      const aiResult = await Promise.race([
-        env.AI.run("@cf/black-forest-labs/flux-2-klein-9b", {
+      // ✅ Call AI
+      const aiResult = await env.AI.run(
+        "@cf/black-forest-labs/flux-2-klein-9b",
+        {
           multipart: {
             body: formStream,
             contentType
           }
-        }),
-        timeout
-      ]);
+        }
+      );
 
-      if (!aiResult) {
-        throw new Error("Empty response from AI engine");
+      // 🚨 CRITICAL FIX — HANDLE BASE64 OUTPUT
+      if (!aiResult || !aiResult.image) {
+        throw new Error("Invalid AI response");
       }
 
-      // ✅ Return raw image bytes
-      return new Response(aiResult, {
+      const base64 = aiResult.image;
+
+      // ✅ Decode base64 → binary
+      const binaryString = atob(base64);
+      const bytes = new Uint8Array(binaryString.length);
+
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+
+      // ✅ Return REAL IMAGE (this fixes your Python issue)
+      return new Response(bytes, {
         headers: {
           "Content-Type": "image/jpeg"
         }
       });
 
     } catch (err) {
-      console.error("FUSION RUNTIME EXCEPTION:", err);
+      console.error("Worker error:", err);
 
       return new Response(
         JSON.stringify({ error: err.message }),
