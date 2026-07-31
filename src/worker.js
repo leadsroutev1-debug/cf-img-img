@@ -16,14 +16,16 @@ export default {
         );
       }
 
-      // ✅ Enhance prompt
-      const enhancedPrompt = `${rawPrompt}, cinematic lighting, consistent character design, same face, same outfit, high detail, 4k`;
+      // ✅ Enhanced prompt (optimized for vertical video scenes)
+      const enhancedPrompt = `${rawPrompt}, cinematic lighting, vertical composition, full body in frame, centered subject, consistent character design, same face, same outfit, high detail, 4k`;
 
       // ✅ Build multipart form (REQUIRED by CF)
       const form = new FormData();
       form.append("prompt", enhancedPrompt);
-      form.append("width", "1024");
-      form.append("height", "1024");
+
+      // 🔥 9:16 PORTRAIT (FIXED)
+      form.append("width", "768");
+      form.append("height", "1365");
 
       let imageCount = 0;
 
@@ -40,7 +42,7 @@ export default {
       console.log("Prompt:", enhancedPrompt.slice(0, 80));
       console.log("Images:", imageCount);
 
-      // ✅ Serialize FormData (REQUIRED trick)
+      // ✅ Serialize FormData (Cloudflare requirement)
       const formResponse = new Response(form);
       const formStream = formResponse.body;
       const contentType = formResponse.headers.get("content-type");
@@ -49,7 +51,7 @@ export default {
         throw new Error("Multipart serialization failed");
       }
 
-      // ✅ Call AI
+      // ✅ Call AI model
       const aiResult = await env.AI.run(
         "@cf/black-forest-labs/flux-2-klein-9b",
         {
@@ -60,7 +62,7 @@ export default {
         }
       );
 
-      // 🚨 CRITICAL FIX — HANDLE BASE64 OUTPUT
+      // 🚨 Validate response
       if (!aiResult || !aiResult.image) {
         throw new Error("Invalid AI response");
       }
@@ -75,7 +77,7 @@ export default {
         bytes[i] = binaryString.charCodeAt(i);
       }
 
-      // ✅ Return REAL IMAGE (this fixes your Python issue)
+      // ✅ Return actual image
       return new Response(bytes, {
         headers: {
           "Content-Type": "image/jpeg"
