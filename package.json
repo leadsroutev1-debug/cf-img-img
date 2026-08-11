@@ -1,12 +1,18 @@
 {
   "name": "cf-img-img",
+  "version": "1.0.0",
+  "private": true,
   "main": "src/worker.js",
+  "type": "module",
   "compatibility_date": "2026-07-29",
-  "ai": {
-    "binding": "AI"
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
   },
-  "observability": {
-    "enabled": true,
-    "head_sampling_rate": 1
+  "dependencies": {
+    "@huggingface/inference": "^4.13.9"
+  },
+  "devDependencies": {
+    "wrangler": "^4.31.0"
   }
 }
