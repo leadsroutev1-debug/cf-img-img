@@ -467,4 +467,3 @@ visually distinct individual.
     }
   }
 };
-
