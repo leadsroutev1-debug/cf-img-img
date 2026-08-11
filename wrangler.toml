@@ -1,12 +1,12 @@
 name = "cf-img-img"
 main = "src/worker.js"
-compatibility_date = "2024-01-01"
+compatibility_date = "2026-07-29"
 
 [ai]
 binding = "AI"
 
 [observability]
-enabled = false
+enabled = true
 head_sampling_rate = 1
 
 [observability.logs]
@@ -19,4 +19,3 @@ invocation_logs = true
 enabled = true
 persist = true
 head_sampling_rate = 1
-
