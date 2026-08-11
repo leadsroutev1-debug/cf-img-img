@@ -1,3 +1,5 @@
+import { InferenceClient } from "@huggingface/inference";
+
 export default {
   async fetch(request, env) {
     if (request.method !== "POST") {
@@ -302,6 +304,105 @@ visually distinct individual.
 `;
 
       // ============================================================
+      // OUTPUT DIMENSIONS
+      // 9:16 PORTRAIT
+      // ============================================================
+
+      const width = 768;
+      const height = 1365;
+
+      // ============================================================
+      // OPTIONAL SEED
+      // ============================================================
+
+      const rawSeed = incomingForm.get("seed");
+
+      let seed;
+
+      if (
+        rawSeed !== null &&
+        rawSeed !== "" &&
+        !Number.isNaN(Number(rawSeed))
+      ) {
+        seed = Number(rawSeed);
+      }
+
+      // ============================================================
+      // LOGGING
+      // ============================================================
+
+      console.log("==============================================");
+      console.log("STREAMVERSE IMAGE GENERATION");
+      console.log("==============================================");
+      console.log("Primary provider: Hugging Face / fal-ai");
+      console.log("Primary model: FLUX.2 Klein 9B Edit");
+      console.log("Fallback: Cloudflare FLUX.2 Klein 9B");
+      console.log("Reference images:", imageCount);
+      console.log("Character mappings:", characters.length);
+      console.log(`Resolution: ${width}x${height}`);
+
+      if (seed !== undefined) {
+        console.log("Seed:", seed);
+      }
+
+      console.log(
+        "Prompt:",
+        enhancedPrompt.slice(0, 500)
+      );
+
+      // ============================================================
+      // PRIMARY:
+      // HUGGING FACE -> FAL AI -> FLUX.2 KLEIN 9B EDIT
+      //
+      // IMPORTANT:
+      // The official HF provider integration supports image-to-image.
+      // The underlying Fal edit endpoint accepts up to 4 images.
+      //
+      // We therefore keep the existing 0-4 reference architecture.
+      // ============================================================
+
+      const hfResult = await generateWithHuggingFace(
+        env,
+        enhancedPrompt.trim(),
+        referenceImages,
+        seed,
+        width,
+        height
+      );
+
+      if (hfResult.ok) {
+        console.log(
+          `Hugging Face generation succeeded using key slot ${hfResult.keySlot}.`
+        );
+
+        return new Response(hfResult.bytes, {
+          status: 200,
+          headers: {
+            "Content-Type":
+              hfResult.contentType || "image/png",
+            "Cache-Control": "no-store",
+            "X-Image-Provider": "huggingface-fal-ai",
+            "X-Image-Model": "FLUX.2-Klein-9B-Edit",
+            "X-HF-Key-Slot":
+              String(hfResult.keySlot)
+          }
+        });
+      }
+
+      // ============================================================
+      // ONLY REACH THIS POINT WHEN HF IS FULLY EXHAUSTED
+      // OR WHEN HF HAS NO CONFIGURED TOKENS.
+      // ============================================================
+
+      console.warn(
+        "Hugging Face primary provider unavailable/exhausted."
+      );
+
+      console.warn(
+        "Falling back to Cloudflare FLUX.2 Klein 9B."
+      );
+
+      // ============================================================
       // BUILD CLOUDFLARE MULTIPART FORM
       // ============================================================
 
@@ -312,28 +413,20 @@ visually distinct individual.
         enhancedPrompt.trim()
       );
 
-      // ============================================================
-      // OUTPUT DIMENSIONS
-      // 9:16 PORTRAIT
-      // ============================================================
+      form.append(
+        "width",
+        String(width)
+      );
 
-      form.append("width", "768");
-      form.append("height", "1365");
+      form.append(
+        "height",
+        String(height)
+      );
 
-      // ============================================================
-      // OPTIONAL SEED
-      // ============================================================
-
-      const rawSeed = incomingForm.get("seed");
-
-      if (
-        rawSeed !== null &&
-        rawSeed !== "" &&
-        !Number.isNaN(Number(rawSeed))
-      ) {
+      if (seed !== undefined) {
         form.append(
           "seed",
-          String(Number(rawSeed))
+          String(seed)
         );
       }
 
@@ -349,36 +442,19 @@ visually distinct individual.
       }
 
       // ============================================================
-      // LOGGING
-      // ============================================================
-
-      console.log("==============================================");
-      console.log("FLUX.2 KLEIN 9B IMAGE GENERATION");
-      console.log("==============================================");
-
-      console.log("Reference images:", imageCount);
-      console.log("Character mappings:", characters.length);
-      console.log("Resolution: 768x1365");
-
-      if (rawSeed !== null && rawSeed !== "") {
-        console.log("Seed:", rawSeed);
-      }
-
-      console.log(
-        "Prompt:",
-        enhancedPrompt.slice(0, 500)
-      );
-
-      // ============================================================
       // SERIALIZE FOR CLOUDFLARE AI
       // ============================================================
 
-      const formResponse = new Response(form);
+      const formResponse =
+        new Response(form);
 
-      const formStream = formResponse.body;
+      const formStream =
+        formResponse.body;
 
       const contentType =
-        formResponse.headers.get("content-type");
+        formResponse.headers.get(
+          "content-type"
+        );
 
       if (!formStream || !contentType) {
         throw new Error(
@@ -387,40 +463,47 @@ visually distinct individual.
       }
 
       // ============================================================
-      // CALL FLUX.2 KLEIN 9B
+      // CLOUDFLARE FALLBACK
       // ============================================================
 
-      const aiResult = await env.AI.run(
-        "@cf/black-forest-labs/flux-2-klein-9b",
-        {
-          multipart: {
-            body: formStream,
-            contentType
+      const aiResult =
+        await env.AI.run(
+          "@cf/black-forest-labs/flux-2-klein-9b",
+          {
+            multipart: {
+              body: formStream,
+              contentType
+            }
           }
-        }
-      );
+        );
 
       // ============================================================
-      // VALIDATE AI RESPONSE
+      // VALIDATE CLOUDFLARE RESPONSE
       // ============================================================
 
-      if (!aiResult || !aiResult.image) {
+      if (
+        !aiResult ||
+        !aiResult.image
+      ) {
         throw new Error(
-          "Invalid AI response: no image returned."
+          "Invalid Cloudflare AI response: no image returned."
         );
       }
 
       // ============================================================
-      // DECODE BASE64 IMAGE
+      // DECODE CLOUDFLARE BASE64 IMAGE
       // ============================================================
 
-      const base64 = aiResult.image;
+      const base64 =
+        aiResult.image;
 
-      const binaryString = atob(base64);
+      const binaryString =
+        atob(base64);
 
-      const bytes = new Uint8Array(
-        binaryString.length
-      );
+      const bytes =
+        new Uint8Array(
+          binaryString.length
+        );
 
       for (
         let i = 0;
@@ -432,23 +515,35 @@ visually distinct individual.
       }
 
       // ============================================================
-      // RETURN GENERATED IMAGE
+      // RETURN CLOUDFLARE IMAGE
       // ============================================================
 
-      return new Response(bytes, {
-        status: 200,
-        headers: {
-          "Content-Type": "image/jpeg",
-          "Cache-Control": "no-store"
+      return new Response(
+        bytes,
+        {
+          status: 200,
+          headers: {
+            "Content-Type":
+              "image/jpeg",
+            "Cache-Control":
+              "no-store",
+            "X-Image-Provider":
+              "cloudflare-flux-2-klein-9b",
+            "X-Image-Fallback":
+              "true"
+          }
         }
-      });
+      );
 
     } catch (err) {
       // ============================================================
-      // ERROR HANDLING
+      // FINAL ERROR HANDLING
       // ============================================================
 
-      console.error("Worker error:", err);
+      console.error(
+        "Worker error:",
+        err
+      );
 
       return new Response(
         JSON.stringify({
@@ -460,10 +555,1198 @@ visually distinct individual.
         {
           status: 500,
           headers: {
-            "Content-Type": "application/json"
+            "Content-Type":
+              "application/json"
           }
         }
       );
     }
   }
 };
+
+
+// ================================================================
+// HUGGING FACE CONFIGURATION
+// ================================================================
+
+const HF_MODEL =
+  "black-forest-labs/FLUX.2-klein-9B";
+
+const HF_PROVIDER =
+  "fal-ai";
+
+
+// ================================================================
+// STICKY KEY STATE
+//
+// IMPORTANT:
+//
+// Cloudflare Workers isolates are ephemeral. This is therefore a
+// best-effort sticky pool per warm Worker isolate.
+//
+// The key is NEVER rotated after a successful request.
+//
+// It is rotated only when the provider explicitly indicates:
+//   - authentication failure
+//   - authorization failure
+//   - quota exhaustion
+//   - rate limiting
+//   - billing/credit exhaustion
+//
+// Ordinary 400/404/422/5xx/provider failures do NOT burn the next
+// HF key.
+// ================================================================
+
+let stickyHFKeyIndex = 0;
+
+let stickyHFKeyFingerprint = null;
+
+
+// ================================================================
+// GET HUGGING FACE TOKEN POOL
+//
+// Supported:
+//
+// HF_TOKEN
+//
+// HF_TOKEN_1
+// HF_TOKEN_2
+// HF_TOKEN_3
+// ...
+//
+// HF_TOKENS=hf_x,hf_y,hf_z
+//
+// HF_TOKEN is treated as slot 0.
+// ================================================================
+
+function getHuggingFaceKeys(env) {
+  const keys = [];
+
+  if (
+    typeof env.HF_TOKEN ===
+      "string" &&
+    env.HF_TOKEN.trim()
+  ) {
+    keys.push(
+      env.HF_TOKEN.trim()
+    );
+  }
+
+  for (
+    let i = 1;
+    i <= 100;
+    i++
+  ) {
+    const value =
+      env[`HF_TOKEN_${i}`];
+
+    if (
+      typeof value ===
+        "string" &&
+      value.trim() &&
+      !keys.includes(
+        value.trim()
+      )
+    ) {
+      keys.push(
+        value.trim()
+      );
+    }
+  }
+
+  if (
+    typeof env.HF_TOKENS ===
+      "string" &&
+    env.HF_TOKENS.trim()
+  ) {
+    for (
+      const value of
+        env.HF_TOKENS.split(",")
+    ) {
+      const token =
+        value.trim();
+
+      if (
+        token &&
+        !keys.includes(token)
+      ) {
+        keys.push(token);
+      }
+    }
+  }
+
+  return keys;
+}
+
+
+// ================================================================
+// TOKEN FINGERPRINT
+//
+// Never expose full HF tokens in logs.
+// ================================================================
+
+function fingerprintToken(token) {
+  if (!token) {
+    return "none";
+  }
+
+  return (
+    token.slice(0, 6) +
+    "..." +
+    token.slice(-4)
+  );
+}
+
+
+// ================================================================
+// CURRENT STICKY TOKEN
+// ================================================================
+
+function getCurrentHFKey(keys) {
+  if (!keys.length) {
+    return null;
+  }
+
+  if (
+    stickyHFKeyIndex >=
+    keys.length
+  ) {
+    stickyHFKeyIndex = 0;
+  }
+
+  return keys[
+    stickyHFKeyIndex
+  ];
+}
+
+
+// ================================================================
+// ROTATE TOKEN
+//
+// THIS IS THE ONLY PLACE THAT ROTATES.
+//
+// A successful request never reaches this function.
+// A normal transient error never reaches this function.
+// ================================================================
+
+function rotateHFKey(keys) {
+  if (!keys.length) {
+    return null;
+  }
+
+  const oldIndex =
+    stickyHFKeyIndex;
+
+  stickyHFKeyIndex =
+    (stickyHFKeyIndex + 1) %
+    keys.length;
+
+  stickyHFKeyFingerprint =
+    fingerprintToken(
+      keys[stickyHFKeyIndex]
+    );
+
+  console.warn(
+    `HF key rotation ${oldIndex} -> ${stickyHFKeyIndex} (${stickyHFKeyFingerprint})`
+  );
+
+  return keys[
+    stickyHFKeyIndex
+  ];
+}
+
+
+// ================================================================
+// ERROR CLASSIFICATION
+//
+// Conservative by design.
+//
+// ROTATE:
+//   401
+//   402
+//   403
+//   429
+//   explicit quota/rate-limit/billing exhaustion
+//
+// DO NOT ROTATE:
+//   400
+//   404
+//   408
+//   409
+//   422
+//   500
+//   502
+//   503
+//   504
+//   network exceptions
+//
+// A provider-side outage must NOT cause StreamVerse to burn
+// through 30 HF tokens.
+// ================================================================
+
+function classifyHFError(
+  status,
+  bodyText
+) {
+  const text =
+    String(
+      bodyText || ""
+    ).toLowerCase();
+
+  const quotaTerms = [
+    "quota",
+    "rate limit",
+    "rate_limit",
+    "ratelimit",
+    "too many requests",
+    "exhausted",
+    "usage limit",
+    "usage_limit",
+    "credits",
+    "credit balance",
+    "billing limit",
+    "monthly limit",
+    "daily limit",
+    "provider quota",
+    "capacity exhausted"
+  ];
+
+  const explicitQuota =
+    quotaTerms.some(
+      word =>
+        text.includes(word)
+    );
+
+  if (status === 401) {
+    return {
+      rotate: true,
+      reason:
+        "authentication failure"
+    };
+  }
+
+  if (status === 402) {
+    return {
+      rotate: true,
+      reason:
+        "payment/quota exhaustion"
+    };
+  }
+
+  if (status === 403) {
+    return {
+      rotate: true,
+      reason:
+        explicitQuota
+          ? "authorization/quota exhaustion"
+          : "token rejected/forbidden"
+    };
+  }
+
+  if (status === 429) {
+    return {
+      rotate: true,
+      reason:
+        "rate limit"
+    };
+  }
+
+  if (
+    explicitQuota &&
+    (
+      status === 400 ||
+      status === 409 ||
+      status === 422
+    )
+  ) {
+    return {
+      rotate: true,
+      reason:
+        "explicit quota/rate-limit exhaustion"
+    };
+  }
+
+  return {
+    rotate: false,
+    reason:
+      `non-rotating provider error ${status}`
+  };
+}
+
+
+// ================================================================
+// CONVERT REFERENCE FILE TO DATA URI
+//
+// Fal accepts image URLs and data URIs. We use data URIs here so
+// the Worker does not need to upload the references to a public
+// storage bucket first.
+//
+// The official Fal FLUX.2 Klein edit API allows up to four images.
+// ================================================================
+
+async function fileToDataURI(file) {
+  const arrayBuffer =
+    await file.arrayBuffer();
+
+  const bytes =
+    new Uint8Array(
+      arrayBuffer
+    );
+
+  let binary = "";
+
+  const chunkSize =
+    0x8000;
+
+  for (
+    let i = 0;
+    i < bytes.length;
+    i += chunkSize
+  ) {
+    const chunk =
+      bytes.subarray(
+        i,
+        Math.min(
+          i + chunkSize,
+          bytes.length
+        )
+      );
+
+    binary += String.fromCharCode(
+      ...chunk
+    );
+  }
+
+  const base64 =
+    btoa(binary);
+
+  let contentType =
+    "image/png";
+
+  if (
+    file &&
+    typeof file.type ===
+      "string" &&
+    file.type
+  ) {
+    contentType =
+      file.type;
+  }
+
+  return `data:${contentType};base64,${base64}`;
+}
+
+
+// ================================================================
+// HUGGING FACE IMAGE-TO-IMAGE REQUEST
+//
+// Uses the official @huggingface/inference client.
+//
+// Provider:
+//   fal-ai
+//
+// Model:
+//   black-forest-labs/FLUX.2-klein-9B
+//
+// The provider's edit implementation accepts up to four image URLs.
+// ================================================================
+
+async function callHuggingFace(
+  token,
+  prompt,
+  referenceImages,
+  seed,
+  width,
+  height
+) {
+  let client;
+
+  try {
+    client =
+      new InferenceClient(
+        token
+      );
+  } catch (error) {
+    return {
+      ok: false,
+      rotate: false,
+      status: 0,
+      error:
+        error instanceof Error
+          ? error.message
+          : String(error)
+    };
+  }
+
+  // --------------------------------------------------------------
+  // Convert all references to data URIs.
+  // --------------------------------------------------------------
+
+  const imageURLs = [];
+
+  try {
+    for (
+      const reference of
+        referenceImages
+    ) {
+      imageURLs.push(
+        await fileToDataURI(
+          reference.file
+        )
+      );
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      rotate: false,
+      status: 400,
+      error:
+        "Failed to serialize reference image: " +
+        (
+          error instanceof Error
+            ? error.message
+            : String(error)
+        )
+    };
+  }
+
+  // --------------------------------------------------------------
+  // If there are no reference images, use text-to-image.
+  //
+  // This keeps the Worker functional for prompts that do not contain
+  // reference images.
+  // --------------------------------------------------------------
+
+  try {
+    if (
+      imageURLs.length === 0
+    ) {
+      const image =
+        await client.textToImage({
+          provider:
+            HF_PROVIDER,
+          model:
+            HF_MODEL,
+          inputs:
+            prompt,
+          parameters: {
+            width,
+            height,
+            guidance_scale:
+              5,
+            num_inference_steps:
+              4,
+            ...(seed !== undefined
+              ? { seed }
+              : {})
+          }
+        });
+
+      const bytes =
+        new Uint8Array(
+          await image.arrayBuffer()
+        );
+
+      if (!bytes.length) {
+        return {
+          ok: false,
+          rotate: false,
+          status: 502,
+          error:
+            "Hugging Face returned an empty image."
+        };
+      }
+
+      return {
+        ok: true,
+        bytes,
+        contentType:
+          image.type ||
+          "image/png"
+      };
+    }
+
+    // ------------------------------------------------------------
+    // IMAGE-TO-IMAGE / EDIT
+    //
+    // The current HF JS client exposes imageToImage, while Fal's
+    // FLUX.2 Klein edit API accepts up to four images.
+    //
+    // Provider-specific parameters are passed through parameters.
+    // ------------------------------------------------------------
+
+    const primaryImage =
+      referenceImages[0].file;
+
+    const imageBlob =
+      new Blob(
+        [
+          await primaryImage.arrayBuffer()
+        ],
+        {
+          type:
+            primaryImage.type ||
+            "image/png"
+        }
+      );
+
+    /*
+     * The standard HF imageToImage interface takes one source image.
+     *
+     * To preserve your existing multi-reference behavior, we also
+     * include the remaining references as provider-specific data
+     * where supported by the Fal implementation.
+     *
+     * The current Fal FLUX.2 Klein edit endpoint accepts up to four
+     * image_urls.
+     */
+
+    const result =
+      await callFalViaHFProvider(
+        client,
+        token,
+        prompt,
+        imageURLs,
+        seed,
+        width,
+        height,
+        imageBlob
+      );
+
+    return result;
+
+  } catch (error) {
+    return classifyHFException(
+      error
+    );
+  }
+}
+
+
+// ================================================================
+// PROVIDER-SPECIFIC FLUX.2 KLEIN EDIT
+//
+// Hugging Face routes provider requests through its inference
+// infrastructure. The provider schema for Fal's FLUX.2 Klein edit
+// endpoint accepts:
+//   prompt
+//   image_urls[]
+//   image_size
+//   num_images
+//   output_format
+//   num_inference_steps
+//   seed
+//
+// We use the HF client where possible and a direct provider-routed
+// request when the multi-image edit schema is required.
+// ================================================================
+
+async function callFalViaHFProvider(
+  client,
+  token,
+  prompt,
+  imageURLs,
+  seed,
+  width,
+  height,
+  primaryImage
+) {
+  /*
+   * IMPORTANT:
+   *
+   * The Hugging Face SDK's generic imageToImage abstraction is
+   * designed around a single input image.
+   *
+   * Fal's FLUX.2 Klein edit endpoint natively supports up to four.
+   *
+   * Therefore we attempt the standard HF imageToImage path for a
+   * single reference, and use the provider-specific route for
+   * multiple references.
+   */
+
+  if (
+    imageURLs.length === 1
+  ) {
+    const image =
+      await client.imageToImage({
+        provider:
+          HF_PROVIDER,
+        model:
+          HF_MODEL,
+        inputs:
+          primaryImage,
+        parameters: {
+          prompt,
+          target_size: {
+            width,
+            height
+          },
+          ...(seed !== undefined
+            ? { seed }
+            : {})
+        }
+      });
+
+    const bytes =
+      new Uint8Array(
+        await image.arrayBuffer()
+      );
+
+    if (!bytes.length) {
+      return {
+        ok: false,
+        rotate: false,
+        status: 502,
+        error:
+          "Hugging Face returned an empty image."
+      };
+    }
+
+    return {
+      ok: true,
+      bytes,
+      contentType:
+        image.type ||
+        "image/png"
+    };
+  }
+
+  // --------------------------------------------------------------
+  // MULTI-REFERENCE REQUEST
+  //
+  // Fal's documented FLUX.2 Klein edit API accepts up to 4 images.
+  //
+  // Hugging Face's provider router exposes provider-specific routes
+  // under:
+  //
+  // https://router.huggingface.co/{provider}
+  //
+  // The Fal provider endpoint is:
+  //
+  // /fal-ai/flux-2/klein/9b/edit
+  // --------------------------------------------------------------
+
+  const url =
+    "https://router.huggingface.co/fal-ai/flux-2/klein/9b/edit";
+
+  const payload = {
+    prompt,
+    image_urls:
+      imageURLs.slice(0, 4),
+    num_inference_steps:
+      4,
+    num_images:
+      1,
+    image_size: {
+      width,
+      height
+    },
+    output_format:
+      "png",
+    enable_safety_checker:
+      true
+  };
+
+  if (seed !== undefined) {
+    payload.seed = seed;
+  }
+
+  let response;
+
+  try {
+    response =
+      await fetch(
+        url,
+        {
+          method:
+            "POST",
+          headers: {
+            "Authorization":
+              `Bearer ${token}`,
+            "Content-Type":
+              "application/json",
+            "Accept":
+              "application/json"
+          },
+          body:
+            JSON.stringify(
+              payload
+            )
+        }
+      );
+  } catch (error) {
+    return {
+      ok: false,
+      rotate: false,
+      networkError: true,
+      status: 0,
+      error:
+        error instanceof Error
+          ? error.message
+          : String(error)
+    };
+  }
+
+  const body =
+    await response.text();
+
+  if (!response.ok) {
+    const classification =
+      classifyHFError(
+        response.status,
+        body
+      );
+
+    return {
+      ok: false,
+      rotate:
+        classification.rotate,
+      reason:
+        classification.reason,
+      status:
+        response.status,
+      error:
+        body ||
+        response.statusText
+    };
+  }
+
+  let json;
+
+  try {
+    json =
+      JSON.parse(body);
+  } catch {
+    return {
+      ok: false,
+      rotate: false,
+      status: 502,
+      error:
+        "Hugging Face/Fal returned a non-JSON successful response."
+    };
+  }
+
+  // --------------------------------------------------------------
+  // Fal output:
+  //
+  // {
+  //   "images": [
+  //     {
+  //       "url": "https://..."
+  //     }
+  //   ]
+  // }
+  // --------------------------------------------------------------
+
+  const imageURL =
+    json?.images?.[0]?.url;
+
+  if (
+    !imageURL ||
+    typeof imageURL !==
+      "string"
+  ) {
+    return {
+      ok: false,
+      rotate: false,
+      status: 502,
+      error:
+        "Hugging Face/Fal response contained no generated image URL."
+    };
+  }
+
+  // --------------------------------------------------------------
+  // Download generated image immediately.
+  // Do not return the temporary Fal URL to StreamVerse.
+  // --------------------------------------------------------------
+
+  let imageResponse;
+
+  try {
+    imageResponse =
+      await fetch(
+        imageURL
+      );
+  } catch (error) {
+    return {
+      ok: false,
+      rotate: false,
+      networkError: true,
+      status: 0,
+      error:
+        "Failed to download generated Fal image: " +
+        (
+          error instanceof Error
+            ? error.message
+            : String(error)
+        )
+    };
+  }
+
+  if (
+    !imageResponse.ok
+  ) {
+    return {
+      ok: false,
+      rotate: false,
+      status:
+        imageResponse.status,
+      error:
+        `Failed to download generated image from Fal: HTTP ${imageResponse.status}`
+    };
+  }
+
+  const bytes =
+    new Uint8Array(
+      await imageResponse.arrayBuffer()
+    );
+
+  if (!bytes.length) {
+    return {
+      ok: false,
+      rotate: false,
+      status: 502,
+      error:
+        "Generated Fal image was empty."
+    };
+  }
+
+  return {
+    ok: true,
+    bytes,
+    contentType:
+      imageResponse.headers.get(
+        "content-type"
+      ) ||
+      "image/png"
+  };
+}
+
+
+// ================================================================
+// CLASSIFY SDK / NETWORK EXCEPTIONS
+// ================================================================
+
+function classifyHFException(
+  error
+) {
+  const message =
+    error instanceof Error
+      ? error.message
+      : String(error);
+
+  const text =
+    message.toLowerCase();
+
+  // --------------------------------------------------------------
+  // Explicit quota/rate-limit/auth errors.
+  // --------------------------------------------------------------
+
+  if (
+    text.includes("429") ||
+    text.includes("rate limit") ||
+    text.includes("rate_limit") ||
+    text.includes("too many requests")
+  ) {
+    return {
+      ok: false,
+      rotate: true,
+      reason:
+        "rate limit",
+      status: 429,
+      error: message
+    };
+  }
+
+  if (
+    text.includes("401") ||
+    text.includes("unauthorized") ||
+    text.includes("invalid token") ||
+    text.includes("authentication")
+  ) {
+    return {
+      ok: false,
+      rotate: true,
+      reason:
+        "authentication failure",
+      status: 401,
+      error: message
+    };
+  }
+
+  if (
+    text.includes("402") ||
+    text.includes("quota") ||
+    text.includes("credits") ||
+    text.includes("credit balance") ||
+    text.includes("billing")
+  ) {
+    return {
+      ok: false,
+      rotate: true,
+      reason:
+        "quota/billing exhaustion",
+      status: 402,
+      error: message
+    };
+  }
+
+  if (
+    text.includes("403") ||
+    text.includes("forbidden")
+  ) {
+    return {
+      ok: false,
+      rotate: true,
+      reason:
+        "provider rejected token",
+      status: 403,
+      error: message
+    };
+  }
+
+  // --------------------------------------------------------------
+  // Everything else stays on the current key.
+  // --------------------------------------------------------------
+
+  return {
+    ok: false,
+    rotate: false,
+    status: 0,
+    error: message
+  };
+}
+
+
+// ================================================================
+// HUGGING FACE GENERATION ENGINE
+//
+// STICKY TOKEN RULE:
+//
+// 1. Get current key.
+// 2. Generate.
+// 3. SUCCESS -> return immediately.
+// 4. Ordinary error -> do NOT rotate.
+// 5. Explicit quota/rate/auth -> rotate.
+// 6. Repeat.
+// 7. Only after ALL keys are exhausted -> Cloudflare.
+// ================================================================
+
+async function generateWithHuggingFace(
+  env,
+  prompt,
+  referenceImages,
+  seed,
+  width,
+  height
+) {
+  const keys =
+    getHuggingFaceKeys(env);
+
+  if (!keys.length) {
+    console.warn(
+      "No Hugging Face tokens configured."
+    );
+
+    return {
+      ok: false,
+      exhausted: true,
+      error:
+        "No Hugging Face tokens configured."
+    };
+  }
+
+  if (
+    stickyHFKeyIndex >=
+    keys.length
+  ) {
+    stickyHFKeyIndex = 0;
+  }
+
+  console.log(
+    `Hugging Face token pool: ${keys.length} key(s).`
+  );
+
+  for (
+    let attempts = 0;
+    attempts < keys.length;
+    attempts++
+  ) {
+    const token =
+      getCurrentHFKey(keys);
+
+    if (!token) {
+      break;
+    }
+
+    stickyHFKeyFingerprint =
+      fingerprintToken(token);
+
+    console.log(
+      `HF attempt ${attempts + 1}/${keys.length}; key slot ${stickyHFKeyIndex} (${stickyHFKeyFingerprint})`
+    );
+
+    const result =
+      await callHuggingFace(
+        token,
+        prompt,
+        referenceImages,
+        seed,
+        width,
+        height
+      );
+
+    // ------------------------------------------------------------
+    // SUCCESS
+    //
+    // NEVER ROTATE.
+    // ------------------------------------------------------------
+
+    if (result.ok) {
+      console.log(
+        `HF generation successful. Key slot ${stickyHFKeyIndex} remains sticky.`
+      );
+
+      return {
+        ok: true,
+        bytes:
+          result.bytes,
+        contentType:
+          result.contentType,
+        keySlot:
+          stickyHFKeyIndex
+      };
+    }
+
+    // ------------------------------------------------------------
+    // NETWORK ERROR
+    //
+    // Retry the SAME key once.
+    // Do not immediately burn another key.
+    // ------------------------------------------------------------
+
+    if (
+      result.networkError
+    ) {
+      console.warn(
+        `HF network error on key ${stickyHFKeyIndex}: ${result.error}`
+      );
+
+      const retry =
+        await callHuggingFace(
+          token,
+          prompt,
+          referenceImages,
+          seed,
+          width,
+          height
+        );
+
+      if (retry.ok) {
+        console.log(
+          `HF retry succeeded. Key ${stickyHFKeyIndex} remains sticky.`
+        );
+
+        return {
+          ok: true,
+          bytes:
+            retry.bytes,
+          contentType:
+            retry.contentType,
+          keySlot:
+            stickyHFKeyIndex
+        };
+      }
+
+      // If retry itself confirms quota/rate exhaustion,
+      // rotation is allowed.
+      if (
+        retry.rotate
+      ) {
+        console.warn(
+          `HF retry confirmed key exhaustion: ${retry.reason}`
+        );
+      } else {
+        console.error(
+          `HF transient failure persisted. Keeping key ${stickyHFKeyIndex}; not burning the token pool.`
+        );
+
+        return {
+          ok: false,
+          exhausted: false,
+          error:
+            retry.error ||
+            result.error
+        };
+      }
+
+      // Continue into rotation below.
+      Object.assign(
+        result,
+        retry
+      );
+    }
+
+    // ------------------------------------------------------------
+    // NON-ROTATING FAILURE
+    //
+    // Do not destroy the token pool because the request/model/provider
+    // itself failed.
+    // ------------------------------------------------------------
+
+    if (!result.rotate) {
+      console.error(
+        `HF failed without key-exhaustion signal. Status=${result.status}; ${result.error}`
+      );
+
+      return {
+        ok: false,
+        exhausted: false,
+        error:
+          result.error ||
+          "Hugging Face provider failure."
+      };
+    }
+
+    // ------------------------------------------------------------
+    // KEY EXHAUSTION
+    // ------------------------------------------------------------
+
+    console.warn(
+      `HF key slot ${stickyHFKeyIndex} exhausted: ${result.reason}`
+    );
+
+    if (
+      attempts <
+      keys.length - 1
+    ) {
+      rotateHFKey(
+        keys
+      );
+
+      continue;
+    }
+
+    // ------------------------------------------------------------
+    // ALL HF KEYS EXHAUSTED
+    // ------------------------------------------------------------
+
+    console.error(
+      "ALL HUGGING FACE KEYS EXHAUSTED."
+    );
+
+    return {
+      ok: false,
+      exhausted: true,
+      error:
+        "All Hugging Face inference keys are exhausted."
+    };
+  }
+
+  return {
+    ok: false,
+    exhausted: true,
+    error:
+      "All Hugging Face inference keys are exhausted."
+  };
+}
