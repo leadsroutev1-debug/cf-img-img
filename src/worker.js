@@ -1,3 +1,15 @@
+/**
+ * StreamVerse FLUX.2 Pro Preview Worker
+ *
+ * Upgrade notes:
+ * - External request contract is unchanged.
+ * - Legacy input_image_0...input_image_3 remains valid.
+ * - Additional input_image_4...input_image_7 are now accepted.
+ * - Cloudflare model upgraded to black-forest-labs/flux-2-pro-preview.
+ * - Cloudflare Pro Preview supports up to 8 reference images.
+ *
+ * Verified against current Cloudflare AI documentation.
+ */
 import { InferenceClient } from "@huggingface/inference";
 
 export default {
@@ -88,7 +100,7 @@ export default {
 
       const referenceImages = [];
 
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < 8; i++) {
         const file = incomingForm.get(`input_image_${i}`);
 
         if (file && typeof file.arrayBuffer === "function") {
@@ -100,6 +112,12 @@ export default {
       }
 
       const imageCount = referenceImages.length;
+
+      if (imageCount > 8) {
+        throw new Error(
+          "A maximum of 8 reference images is supported by FLUX.2 Pro Preview."
+        );
+      }
 
       if (imageCount === 0) {
         console.warn("No reference images supplied.");
@@ -336,7 +354,7 @@ visually distinct individual.
       console.log("==============================================");
       console.log("Primary provider: Hugging Face / fal-ai");
       console.log("Primary model: FLUX.2 Klein 9B Edit");
-      console.log("Fallback: Cloudflare FLUX.2 Klein 9B");
+      console.log("Fallback: Cloudflare FLUX.2 Pro Preview");
       console.log("Reference images:", imageCount);
       console.log("Character mappings:", characters.length);
       console.log(`Resolution: ${width}x${height}`);
@@ -356,7 +374,7 @@ visually distinct individual.
       //
       // IMPORTANT:
       // The official HF provider integration supports image-to-image.
-      // The underlying Fal edit endpoint accepts up to 4 images.
+      // The underlying Fal edit endpoint accepts up to 8 images.
       //
       // We therefore keep the existing 0-4 reference architecture.
       // ============================================================
@@ -399,83 +417,57 @@ visually distinct individual.
       );
 
       console.warn(
-        "Falling back to Cloudflare FLUX.2 Klein 9B."
+        "Falling back to Cloudflare FLUX.2 Pro Preview."
       );
 
       // ============================================================
-      // BUILD CLOUDFLARE MULTIPART FORM
+      // CLOUDFLARE AI -> FLUX.2 PRO PREVIEW
+      //
+      // IMPORTANT:
+      // The public Worker contract remains unchanged:
+      //   - prompt
+      //   - characters
+      //   - input_image_0 ... input_image_7
+      //   - seed
+      //
+      // Internally, FLUX.2 [pro] Preview expects:
+      //   - prompt
+      //   - width / height
+      //   - optional seed
+      //   - input_images[] as HTTPS URLs or data:image/... URIs
+      //
+      // Cloudflare documents a maximum of 8 reference images.
       // ============================================================
 
-      const form = new FormData();
-
-      form.append(
-        "prompt",
-        enhancedPrompt.trim()
-      );
-
-      form.append(
-        "width",
-        String(width)
-      );
-
-      form.append(
-        "height",
-        String(height)
-      );
-
-      if (seed !== undefined) {
-        form.append(
-          "seed",
-          String(seed)
-        );
-      }
-
-      // ============================================================
-      // ATTACH REFERENCE IMAGES
-      // ============================================================
+      const inputImages = [];
 
       for (const reference of referenceImages) {
-        form.append(
-          `input_image_${reference.index}`,
-          reference.file
+        inputImages.push(
+          await fileToDataURI(reference.file)
         );
       }
 
-      // ============================================================
-      // SERIALIZE FOR CLOUDFLARE AI
-      // ============================================================
+      const cloudflareInput = {
+        prompt: enhancedPrompt.trim(),
+        width,
+        height,
+        output_format: "jpeg",
+        input_images: inputImages.slice(0, 8),
+      };
 
-      const formResponse =
-        new Response(form);
-
-      const formStream =
-        formResponse.body;
-
-      const contentType =
-        formResponse.headers.get(
-          "content-type"
-        );
-
-      if (!formStream || !contentType) {
-        throw new Error(
-          "Multipart serialization failed"
-        );
+      if (seed !== undefined) {
+        cloudflareInput.seed = seed;
       }
 
-      // ============================================================
-      // CLOUDFLARE FALLBACK
-      // ============================================================
+      console.log(
+        "Cloudflare FLUX.2 Pro Preview reference images:",
+        cloudflareInput.input_images.length
+      );
 
-      const aiResult =
-        await env.AI.run(
-          "@cf/black-forest-labs/flux-2-klein-9b",
-          {
-            multipart: {
-              body: formStream,
-              contentType
-            }
-          }
-        );
+      const aiResult = await env.AI.run(
+        "black-forest-labs/flux-2-pro-preview",
+        cloudflareInput
+      );
 
       // ============================================================
       // VALIDATE CLOUDFLARE RESPONSE
@@ -491,49 +483,101 @@ visually distinct individual.
       }
 
       // ============================================================
-      // DECODE CLOUDFLARE BASE64 IMAGE
+      // RESOLVE CLOUDFLARE GENERATED IMAGE
+      //
+      // The current Pro Preview binding returns an image URL.
+      // Keep the Worker contract stable by downloading the result and
+      // returning the actual image bytes from this Worker.
+      //
+      // Also tolerate a data URI / raw byte-like result so minor binding
+      // response-shape differences do not break the endpoint.
       // ============================================================
 
-      const base64 =
-        aiResult.image;
+      const generatedImage = aiResult?.image;
 
-      const binaryString =
-        atob(base64);
-
-      const bytes =
-        new Uint8Array(
-          binaryString.length
+      if (!generatedImage) {
+        throw new Error(
+          "Invalid Cloudflare AI response: no generated image returned."
         );
-
-      for (
-        let i = 0;
-        i < binaryString.length;
-        i++
-      ) {
-        bytes[i] =
-          binaryString.charCodeAt(i);
       }
 
-      // ============================================================
-      // RETURN CLOUDFLARE IMAGE
-      // ============================================================
+      if (
+        typeof generatedImage === "string" &&
+        generatedImage.startsWith("data:")
+      ) {
+        const commaIndex = generatedImage.indexOf(",");
+        if (commaIndex === -1) {
+          throw new Error("Invalid data URI returned by Cloudflare AI.");
+        }
 
-      return new Response(
-        bytes,
-        {
+        const metadata = generatedImage.slice(5, commaIndex);
+        const payload = generatedImage.slice(commaIndex + 1);
+
+        if (!metadata.toLowerCase().includes(";base64")) {
+          throw new Error(
+            "Unsupported non-base64 data URI returned by Cloudflare AI."
+          );
+        }
+
+        const binaryString = atob(payload);
+        const bytes = new Uint8Array(binaryString.length);
+
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+
+        return new Response(bytes, {
           status: 200,
           headers: {
-            "Content-Type":
-              "image/jpeg",
-            "Cache-Control":
-              "no-store",
+            "Content-Type": "image/jpeg",
+            "Cache-Control": "no-store",
             "X-Image-Provider":
-              "cloudflare-flux-2-klein-9b",
-            "X-Image-Fallback":
-              "true"
-          }
-        }
+              "cloudflare-flux-2-pro-preview",
+            "X-Image-Fallback": "true",
+            "X-Image-Reference-Limit": "8",
+          },
+        });
+      }
+
+      if (
+        typeof generatedImage !== "string" ||
+        !/^https:\/\//i.test(generatedImage)
+      ) {
+        throw new Error(
+          "Invalid Cloudflare AI response: generated image was not a valid HTTPS URL or data URI."
+        );
+      }
+
+      const imageResponse = await fetch(generatedImage);
+
+      if (!imageResponse.ok) {
+        throw new Error(
+          `Failed to download generated Cloudflare image: HTTP ${imageResponse.status}`
+        );
+      }
+
+      const bytes = new Uint8Array(
+        await imageResponse.arrayBuffer()
       );
+
+      if (!bytes.length) {
+        throw new Error(
+          "Generated Cloudflare image was empty."
+        );
+      }
+
+      return new Response(bytes, {
+        status: 200,
+        headers: {
+          // Preserve the old Worker response contract.
+          "Content-Type": "image/jpeg",
+          "Cache-Control": "no-store",
+          "X-Image-Provider":
+            "cloudflare-flux-2-pro-preview",
+          "X-Image-Fallback": "true",
+          "X-Image-Reference-Limit": "8",
+        },
+      });
 
     } catch (err) {
       // ============================================================
@@ -877,11 +921,11 @@ function classifyHFError(
 // ================================================================
 // CONVERT REFERENCE FILE TO DATA URI
 //
-// Fal accepts image URLs and data URIs. We use data URIs here so
-// the Worker does not need to upload the references to a public
-// storage bucket first.
+// Cloudflare FLUX.2 Pro Preview accepts HTTPS URLs and data URIs. We
+// use data URIs here so the Worker does not need to upload references
+// to a public storage bucket first.
 //
-// The official Fal FLUX.2 Klein edit API allows up to four images.
+// The official Fal FLUX.2 Klein edit API allows up to eight images.
 // ================================================================
 
 async function fileToDataURI(file) {
@@ -1070,7 +1114,7 @@ async function callHuggingFace(
     // IMAGE-TO-IMAGE / EDIT
     //
     // The current HF JS client exposes imageToImage, while Fal's
-    // FLUX.2 Klein edit API accepts up to four images.
+    // FLUX.2 Klein edit API accepts up to eight images.
     //
     // Provider-specific parameters are passed through parameters.
     // ------------------------------------------------------------
@@ -1214,7 +1258,7 @@ async function callFalViaHFProvider(
   // --------------------------------------------------------------
   // MULTI-REFERENCE REQUEST
   //
-  // Fal's documented FLUX.2 Klein edit API accepts up to 4 images.
+  // Fal's documented FLUX.2 Klein edit API accepts up to 8 images.
   //
   // Hugging Face's provider router exposes provider-specific routes
   // under:
