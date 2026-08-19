@@ -308,8 +308,8 @@ visually distinct individual.
       // 9:16 PORTRAIT
       // ============================================================
 
-      const width = 768;
-      const height = 1365;
+      const width = 1024;
+      const height = 1536;
 
       // ============================================================
       // OPTIONAL SEED
